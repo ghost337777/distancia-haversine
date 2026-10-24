@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Distancia entre dos puntos de la Tierra (Haversine)</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<style>
+  :root { --bg:#f6f7f9; --card:#fff; --ink:#1b1f24; --muted:#5b6570; --line:#d8dde3; --acc:#0b5ed7; --a:#d62828; --b:#1d6fd6; }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; background:var(--bg); color:var(--ink); }
+  header { padding:18px 20px 6px; max-width:1100px; margin:0 auto; }
+  h1 { font-size:1.35rem; margin:0 0 4px; }
+  header p { margin:0; color:var(--muted); font-size:.92rem; }
+  main { max-width:1100px; margin:0 auto; padding:12px 20px 30px; display:grid; gap:16px; grid-template-columns:1fr 1fr; }
+  @media (max-width:820px){ main{ grid-template-columns:1fr; } }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:16px; }
+  .card h2 { font-size:1rem; margin:0 0 10px; }
+  .row { display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-bottom:10px; }
+  label { display:block; font-size:.8rem; color:var(--muted); margin-bottom:3px; }
+  input, select { width:100%; padding:8px; border:1px solid var(--line); border-radius:6px; font-size:.95rem; }
+  .pt-a { border-left:4px solid var(--a); padding-left:10px; margin-bottom:12px; }
+  .pt-b { border-left:4px solid var(--b); padding-left:10px; margin-bottom:12px; }
+  button { background:var(--acc); color:#fff; border:0; border-radius:6px; padding:10px 14px; font-size:.95rem; cursor:pointer; }
+  button:hover { filter:brightness(1.08); }
+  #result { font-size:2rem; font-weight:700; margin:4px 0 2px; }
+  #result small { font-size:1rem; font-weight:400; color:var(--muted); }
+  table { width:100%; border-collapse:collapse; font-size:.88rem; margin-top:8px; }
+  td, th { padding:5px 6px; border-bottom:1px solid var(--line); text-align:left; }
+  td:last-child { text-align:right; font-variant-numeric:tabular-nums; }
+  #map { height:420px; border-radius:8px; border:1px solid var(--line); }
+  .full { grid-column:1 / -1; }
+  .err { color:#b00020; font-size:.85rem; min-height:1.1em; }
+  code { background:#eef1f5; padding:1px 5px; border-radius:4px; }
+  .note { color:var(--muted); font-size:.8rem; margin-top:8px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Distancia entre dos puntos de la Tierra</h1>
+  <p>Fórmula del haversine sobre una esfera de radio medio <code>R = 6371.0088 km</code>. Coordenadas reales (WGS-84, GeoNames).</p>
+</header>
+
+<main>
+  <section class="card">
+    <h2>Coordenadas de entrada</h2>
+
+    <label for="preset">Pares de ciudades reales</label>
+    <select id="preset" style="margin-bottom:14px"></select>
+
+    <div class="pt-a">
+      <label>Punto A &mdash; nombre</label>
+      <input id="nameA" type="text">
+      <div class="row" style="margin-top:8px">
+        <div><label>Latitud φ₁ (° , −90 a 90)</label><input id="latA" type="number" step="any"></div>
+        <div><label>Longitud λ₁ (° , −180 a 180)</label><input id="lonA" type="number" step="any"></div>
+      </div>
+    </div>
+
+    <div class="pt-b">
+      <label>Punto B &mdash; nombre</label>
+      <input id="nameB" type="text">
+      <div class="row" style="margin-top:8px">
+        <div><label>Latitud φ₂ (°)</label><input id="latB" type="number" step="any"></div>
+        <div><label>Longitud λ₂ (°)</label><input id="lonB" type="number" step="any"></div>
+      </div>
+    </div>
+
+    <button id="calc">Calcular distancia</button>
+    <div class="err" id="err"></div>
+    <p class="note">Convención: latitud norte (+) / sur (−); longitud este (+) / oeste (−).</p>
+  </section>
+
+  <section class="card">
+    <h2>Resultado</h2>
+    <div id="result">&mdash;</div>
+    <div id="sub" class="note"></div>
+    <table id="steps"></table>
+  </section>
+
+  <section class="card full">
+    <h2>Arco de círculo máximo (ruta más corta sobre la esfera)</h2>
+    <div id="map"></div>
+    <p class="note" id="mapnote"></p>
+  </section>
+</main>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script>
+/* ===== Núcleo matemático ===== */
+const R_KM = 6371.0088;               // radio medio terrestre (IUGG), km
+const toRad = d => d * Math.PI / 180;
+const toDeg = r => r * 180 / Math.PI;
+
+// Haversine: hav(θ) = sin²(θ/2)
+function haversine(lat1, lon1, lat2, lon2, R = R_KM) {
+  const p1 = toRad(lat1), p2 = toRad(lat2);
+  const dphi = p2 - p1, dlam = toRad(lon2 - lon1);
+  const a = Math.sin(dphi / 2) ** 2 + Math.cos(p1) * Math.cos(p2) * Math.sin(dlam / 2) ** 2;
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));   // ángulo central θ (rad)
+  return { dphi, dlam, a, c, d: R * c };
+}
+
+// Ley esférica de los cosenos (verificación)
+function lawOfCosines(lat1, lon1, lat2, lon2, R = R_KM) {
+  const p1 = toRad(lat1), p2 = toRad(lat2), dl = toRad(lon2 - lon1);
+  const x = Math.sin(p1) * Math.sin(p2) + Math.cos(p1) * Math.cos(p2) * Math.cos(dl);
+  return R * Math.acos(Math.max(-1, Math.min(1, x)));
+}
+
+// Vectores unitarios: θ = atan2(|u×v|, u·v) (verificación, estable en distancias cortas)
+function toVec(lat, lon) {
+  const p = toRad(lat), l = toRad(lon);
+  return [Math.cos(p) * Math.cos(l), Math.cos(p) * Math.sin(l), Math.sin(p)];
+}
+function vectorMethod(lat1, lon1, lat2, lon2, R = R_KM) {
+  const u = toVec(lat1, lon1), v = toVec(lat2, lon2);
+  const dot = u[0]*v[0] + u[1]*v[1] + u[2]*v[2];
+  const cx = [u[1]*v[2]-u[2]*v[1], u[2]*v[0]-u[0]*v[2], u[0]*v[1]-u[1]*v[0]];
+  return R * Math.atan2(Math.hypot(cx[0], cx[1], cx[2]), dot);
+}
+
+// Puntos intermedios del círculo máximo (interpolación esférica)
+function greatCircle(lat1, lon1, lat2, lon2, n = 100) {
+  const u = toVec(lat1, lon1), v = toVec(lat2, lon2);
+  const th = Math.acos(Math.max(-1, Math.min(1, u[0]*v[0] + u[1]*v[1] + u[2]*v[2])));
+  const pts = [];
+  for (let i = 0; i <= n; i++) {
+    const f = i / n;
+    const s = Math.sin(th);
+    const A = s === 0 ? 1 - f : Math.sin((1 - f) * th) / s;
+    const B = s === 0 ? f : Math.sin(f * th) / s;
+    const x = A*u[0] + B*v[0], y = A*u[1] + B*v[1], z = A*u[2] + B*v[2];
+    pts.push([toDeg(Math.atan2(z, Math.hypot(x, y))), toDeg(Math.atan2(y, x))]);
+  }
+  return pts;
+}
+
+/* ===== Datos reales (GeoNames, WGS-84) ===== */
+const CITIES = {
+  "Barranquilla": [10.96854, -74.78132],
+  "Bogotá":       [4.60971,  -74.08175],
+  "Cartagena":    [10.39817, -75.49328],
+  "Madrid":       [40.4165,  -3.7026]
+};
+const PRESETS = [
+  ["Barranquilla", "Bogotá"],
+  ["Barranquilla", "Cartagena"],
+  ["Barranquilla", "Madrid"]
+];
+
+/* ===== Interfaz ===== */
+const $ = id => document.getElementById(id);
+const fmt = (x, k = 4) => x.toLocaleString("es-CO", { minimumFractionDigits: k, maximumFractionDigits: k });
+
+PRESETS.forEach((p, i) => {
+  const o = document.createElement("option");
+  o.value = i; o.textContent = p[0] + " → " + p[1];
+  $("preset").appendChild(o);
+});
+
+function loadPreset(i) {
+  const [a, b] = PRESETS[i];
+  $("nameA").value = a; $("latA").value = CITIES[a][0]; $("lonA").value = CITIES[a][1];
+  $("nameB").value = b; $("latB").value = CITIES[b][0]; $("lonB").value = CITIES[b][1];
+  calculate();
+}
+
+let map, layerGroup;
+function drawMap(nameA, A, nameB, B) {
+  if (typeof L === "undefined") {
+    $("mapnote").textContent = "No se pudo cargar el mapa (sin conexión a la librería Leaflet), pero el cálculo sigue siendo válido.";
+    return;
+  }
+  if (!map) {
+    map = L.map("map", { worldCopyJump: true });
+    L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}", {
+      maxZoom: 19,
+      attribution: "Tiles &copy; Esri &mdash; Esri, DeLorme, NAVTEQ, USGS, and others"
+    }).addTo(map);
+    layerGroup = L.layerGroup().addTo(map);
+  }
+  layerGroup.clearLayers();
+  const dot = color => ({ radius: 8, color: "#fff", weight: 2, fillColor: color, fillOpacity: 1 });
+  L.circleMarker(A, dot("#d62828")).bindTooltip("A: " + nameA, { permanent: true, direction: "top" }).addTo(layerGroup);
+  L.circleMarker(B, dot("#1d6fd6")).bindTooltip("B: " + nameB, { permanent: true, direction: "top" }).addTo(layerGroup);
+  const pts = greatCircle(A[0], A[1], B[0], B[1]);
+  // evita saltos de ±180° al dibujar
+  const segs = []; let cur = [pts[0]];
+  for (let i = 1; i < pts.length; i++) {
+    if (Math.abs(pts[i][1] - pts[i-1][1]) > 180) { segs.push(cur); cur = []; }
+    cur.push(pts[i]);
+  }
+  segs.push(cur);
+  L.polyline(segs, { color: "#2a9d3f", weight: 4 }).addTo(layerGroup);
+  map.fitBounds(L.latLngBounds([A, B]).pad(0.35));
+  $("mapnote").textContent = "Línea verde: arco de círculo máximo entre A y B (la ruta más corta sobre la superficie esférica).";
+}
+
+function calculate() {
+  const v = id => parseFloat($(id).value);
+  const lat1 = v("latA"), lon1 = v("lonA"), lat2 = v("latB"), lon2 = v("lonB");
+  const err = $("err"); err.textContent = "";
+  if ([lat1, lon1, lat2, lon2].some(Number.isNaN)) { err.textContent = "Completa las cuatro coordenadas con números."; return; }
+  if (Math.abs(lat1) > 90 || Math.abs(lat2) > 90) { err.textContent = "La latitud debe estar entre −90° y 90°."; return; }
+  if (Math.abs(lon1) > 180 || Math.abs(lon2) > 180) { err.textContent = "La longitud debe estar entre −180° y 180°."; return; }
+
+  const r = haversine(lat1, lon1, lat2, lon2);
+  const dCos = lawOfCosines(lat1, lon1, lat2, lon2);
+  const dVec = vectorMethod(lat1, lon1, lat2, lon2);
+
+  $("result").innerHTML = fmt(r.d, 3) + " <small>km</small>";
+  $("sub").textContent = "Distancia de círculo máximo entre A (" + $("nameA").value + ") y B (" + $("nameB").value + ").";
+  $("steps").innerHTML = `
+    <tr><th colspan="2">Paso a paso (haversine)</th></tr>
+    <tr><td>Δφ = φ₂ − φ₁</td><td>${fmt(toDeg(r.dphi), 5)}° &nbsp;(${fmt(r.dphi, 6)} rad)</td></tr>
+    <tr><td>Δλ = λ₂ − λ₁</td><td>${fmt(toDeg(r.dlam), 5)}° &nbsp;(${fmt(r.dlam, 6)} rad)</td></tr>
+    <tr><td>a = sin²(Δφ/2) + cos φ₁ · cos φ₂ · sin²(Δλ/2)</td><td>${r.a.toExponential(6)}</td></tr>
+    <tr><td>θ = 2 · atan2(√a, √(1−a))</td><td>${fmt(r.c, 6)} rad &nbsp;(${fmt(toDeg(r.c), 4)}°)</td></tr>
+    <tr><td>d = R · θ, con R = ${R_KM} km</td><td><b>${fmt(r.d, 3)} km</b></td></tr>
+    <tr><th colspan="2">Verificación con otros dos métodos</th></tr>
+    <tr><td>Ley esférica de los cosenos</td><td>${fmt(dCos, 3)} km</td></tr>
+    <tr><td>Producto vectorial / escalar (atan2)</td><td>${fmt(dVec, 3)} km</td></tr>`;
+  drawMap($("nameA").value, [lat1, lon1], $("nameB").value, [lat2, lon2]);
+}
+
+$("calc").addEventListener("click", calculate);
+$("preset").addEventListener("change", e => loadPreset(+e.target.value));
+loadPreset(0);
+</script>
+</body>
+</html>
